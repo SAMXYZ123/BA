@@ -1,4 +1,5 @@
-function [l] = H0(x,D,Z,doprior)
+load H2_Fit
+load Data
 
 % Fit dual-control model by Daw et al., 2011, Neuron, to data from the two-step task
 
@@ -17,41 +18,33 @@ function [l] = H0(x,D,Z,doprior)
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %Include Prior into MLE, so estimate via MAP0
-doprior=1;
+%doprior=1;
 
+
+for p=1:numel(Data)
 % number of trials
-nt = size(D.r,1);
+nt(p) = Data(p).Nch;
 
 % number of parameters
-np = length(x);
+np = length(Parameter_Mean);
 
 % paramter derived from x 
-bmbi   = x(1);% parameter indicating redundancy of choices/ how deterministic they are
-bmbs   = x(2);
-bmfi   = x(3);
-bmfs   = x(4);
+bmbi   = Parameter_PP(1,p);% parameter indicating redundancy of choices/ how deterministic they are
+bmbs   = Parameter_PP(2,p);
+bmfi   = Parameter_PP(3,p);
+bmfs   = Parameter_PP(4,p);
 
-bmw_mb    = x(5);
-bmw_mf    = x(6);
+bmw    = Parameter_PP(5,p);
+bmwi   = Parameter_PP(6,p);
 
-bmwi_mb   = x(7);
-bmwi_mf   = x(8);
-
-b2    = exp(x(9));
-alpha  = 1./(1+exp(-x(10:11))); % learning rate
-lambda = 1./(1+exp(-x(12))); % eligibility parameter ([0,1]) --> short-term memory parameter; how fast fades a new information that does not correspond with prior learning within one stage and is addable to old knowledge; weights events/outcomes depending on how long ago they are in terms of influence
-rep    = x(13)*eye(2); % 1 if same 1st stage choice, 0 if different one (eye is identity matrix)
-
+b2    = exp(Parameter_PP(7,p));
+alpha  = 1./(1+exp(-Parameter_PP(8:9,p))); % learning rate
+lambda = 1./(1+exp(-Parameter_PP(10,p))); % eligibility parameter ([0,1]) --> short-term memory parameter; how fast fades a new information that does not correspond with prior learning within one stage and is addable to old knowledge; weights events/outcomes depending on how long ago they are in terms of influence
+rep    = Parameter_PP(11,p)*eye(2); % 1 if same 1st stage choice, 0 if different one (eye is identity matrix)
 
 % preallocate variables for MS estimation
 l  = 0;
-%dl = zeros(np,1);
 
-% adds bayesian apriori if doprior=TRUE
-if doprior
-    l  = l  + ( -np/2*log(2*pi) -1/2*log(1/det(Z.nui)) -1/2*(x-Z.mu)'*Z.nui*(x-Z.mu) );
-%    dl = dl + -Z.nui*(x-Z.mu);
-end
 
 % preallocate variables that will be created later on
 Q1   = zeros(2,1);
@@ -64,14 +57,14 @@ n = zeros(2);
 betaMax = 20;
 
 % loop through all trials
-for t=1:nt
+for t=1:nt(p)
     
     
-    a = D.a(t,:); % get actions of trial
-    r = D.r(t); % get reward of trial
-    s = D.s(t); % get transition of trial
-    nT2Probe = D.nT2Probe(t);
-    MW_Value = D.MW_Value(t);
+    a = Data(p).A(:,t); % get actions of trial
+    r = Data(p).R(t); % get reward of trial
+    s = Data(p).S(2,t)-1; % get transition of trial
+    nT2Probe = Data(p).nT2Probe(t);
+    MW_Value = Data(p).MW_Value(t);
     
     %------------------------------------------
     % 1st stage
@@ -95,17 +88,17 @@ for t=1:nt
     
     
     
-    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    % Linear Model to Test Hypothesis
-    bmb = exp(bmbi + bmbs * nT2Probe + bmw_mb * MW_Value + bmwi_mb * MW_Value * nT2Probe);
-    bmf = exp(bmfi + bmfs * nT2Probe + bmw_mf * MW_Value + bmwi_mf * MW_Value * nT2Probe);
+     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+     % Linear Model to Test Hypothesis
+     bmb = exp(bmbi + bmbs * nT2Probe);
+     bmf = exp(bmfi + bmfs * nT2Probe + bmw * MW_Value + bmwi * MW_Value * nT2Probe);
     
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     
     
     % effective Q-values
     if t > 1
-        Qeff = bmb * Qd + bmf * Q1 + rep(:,D.a(t-1,1));
+        Qeff = bmb * Qd + bmf * Q1 + rep(:,Data(p).A(1,t-1));
     else
         Qeff = bmb * Qd + bmf * Q1;
     end
@@ -116,6 +109,7 @@ for t=1:nt
     lpa1 = lpa1 - log(sum(exp(lpa1)));
     l = l + lpa1(a(1)); % log probability for action
     pa1 = exp(lpa1);
+    modelprob_1(p,t) = pa1(a(1)); % save first step choice probability
         
     %------------------------------------------
     % 2nd stage
@@ -129,6 +123,7 @@ for t=1:nt
 
     l = l + lpa2(a(2)); % log probability for action
     pa2 = exp(lpa2);
+    modelprob_2(p,t) = pa2(a(2)); % save second step choice probability
     
     
     %--------------------------------------------
@@ -157,4 +152,32 @@ end
 % Output of ML estimation
 l = -l;
 %dl = -dl;
+end
 
+
+% concatonate probs in order to take product 
+modelprob_1_shape = reshape(modelprob_1', 1, []);
+modelprob_2_shape = reshape(modelprob_2', 1, []);
+
+% remove zeros
+no_zeros_1 = ~ismember(modelprob_1_shape, 0);
+modelprob_1_concat = modelprob_1_shape(no_zeros_1);
+
+no_zeros_2 = ~ismember(modelprob_2_shape, 0);
+modelprob_2_concat = modelprob_2_shape(no_zeros_2);
+
+% Instead of multiplying the probabilities calculate sum of log(p)
+% Matlab cannot deal with number lowe than e-324
+modelprob_1_prod = sum(log(modelprob_1_concat));
+modelprob_2_prod = sum(log(modelprob_2_concat));
+modelprob_all_prod = sum(log([modelprob_1_concat modelprob_2_concat]));
+
+
+% Probability for choices given Model
+% Same reason: Instead of power to the given term multiply by it and then
+% exp(p)
+Prob_Model_Choice_1 = exp(modelprob_1_prod * (1/(sum(nt))))
+Prob_Model_Choice_2 = exp(modelprob_2_prod * (1/(sum(nt))))
+Prob_Model_Choice_all = exp(modelprob_all_prod * (1/(2*sum(nt))))
+
+save('Choice_Prob_H2.mat', 'Prob_Model_Choice_1', 'Prob_Model_Choice_2', 'Prob_Model_Choice_all');
